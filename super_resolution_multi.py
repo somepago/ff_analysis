@@ -1,5 +1,5 @@
 """
-python super_resolution_multi.py  --max_images 4 --latent_size 256 --mapping_size 128 --iters 10000 --reg_lambda 1e-4 --exp base_multi
+python super_resolution_multi.py  --max_images 2 --latent_size 256 --mapping_size 128 --iters 4000 --reg_lambda 1e-4 --exp w_tanh_activation --activations special
 """
 
 import os
@@ -49,12 +49,19 @@ class SirenLayer(nn.Module):
     
 
 
-def make_model(num_layers, input_dim, hidden_dim, layerstyle = 'relu'):
-    if layerstyle == 'sine':
+def make_model(num_layers, input_dim, hidden_dim, activation_style = 'relu'):
+    if activation_style == 'Siren':
         layers = [SirenLayer(input_dim, hidden_dim, is_first=True)]
         for i in range(1, num_layers - 1):
             layers.append(SirenLayer(hidden_dim, hidden_dim))
         layers.append(SirenLayer(hidden_dim, 3, is_last=True))
+    elif activation_style == 'special':
+        layers = [nn.Linear(input_dim, hidden_dim),nn.Tanh()]
+        for i in range(1, num_layers - 1):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(nn.Tanh())
+        layers.append(nn.Linear(hidden_dim, 3))
+        layers.append(nn.Sigmoid())
     else:
         layers = [nn.Linear(input_dim, hidden_dim),nn.ReLU()]
         for i in range(1, num_layers - 1):
@@ -67,10 +74,10 @@ def make_model(num_layers, input_dim, hidden_dim, layerstyle = 'relu'):
 
 
 def train_model(network_size, learning_rate, iters, B, latent_params,
-                train_data, test_data, layerstyle = 'relu', device=None):
+                train_data, test_data, activation_style = 'relu', device=None):
     # import ipdb
     # ipdb.set_trace()
-    model = make_model(*network_size,layerstyle=layerstyle).to(device)
+    model = make_model(*network_size,activation_style=activation_style).to(device)
 
     num_images = len(train_data[0])
     latent_size, latent_bound, reg_lambda = latent_params
@@ -216,4 +223,4 @@ if __name__ == "__main__":
 
     # Collect outputs
     train_model(network_size, args.lr, args.iters, B, latent_params,
-                train_data, test_data, layerstyle=args.activations, device=device)
+                train_data, test_data, activation_style=args.activations, device=device)

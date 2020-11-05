@@ -1,3 +1,7 @@
+'''
+python super_resolution_single.py --data ./fox.jpg--iters 10000 --activations special
+'''
+
 import os
 import numpy as np
 from tqdm import tqdm
@@ -64,12 +68,19 @@ class SirenLayer(nn.Module):
         return x if self.is_last else torch.sin(self.w0 * x)
 
 
-def make_model(num_layers, input_dim, hidden_dim, layerstyle = 'regular'):
-    if layerstyle == 'Siren':
+def make_model(num_layers, input_dim, hidden_dim, activation_style = 'relu'):
+    if activation_style == 'Siren':
         layers = [SirenLayer(input_dim, hidden_dim, is_first=True)]
         for i in range(1, num_layers - 1):
             layers.append(SirenLayer(hidden_dim, hidden_dim))
         layers.append(SirenLayer(hidden_dim, 3, is_last=True))
+    elif activation_style == 'special':
+        layers = [nn.Linear(input_dim, hidden_dim),nn.Tanh()]
+        for i in range(1, num_layers - 1):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(nn.Tanh())
+        layers.append(nn.Linear(hidden_dim, 3))
+        layers.append(nn.Sigmoid())
     else:
         layers = [nn.Linear(input_dim, hidden_dim),nn.ReLU()]
         for i in range(1, num_layers - 1):
@@ -81,12 +92,13 @@ def make_model(num_layers, input_dim, hidden_dim, layerstyle = 'regular'):
     return nn.Sequential(*layers)
 
 
-def train_model(network_size, learning_rate, iters, B, train_data, test_data, device=None):
+def train_model(network_size, learning_rate, iters, B, train_data, test_data,activation_style='relu', device=None):
     num_layers, input_dim, hidden_dim = network_size
     input_dim = 2 if B is None else B.shape[0] * 2
     model = make_model(num_layers, input_dim, hidden_dim).to(device)
-    
-    optim = torch.optim.Adam(list(model.parameters()) + [B], lr=learning_rate)
+    optim = torch.optim.Adam(list(model.parameters()), lr=learning_rate)
+
+#     optim = torch.optim.Adam(list(model.parameters()) + [B], lr=learning_rate)
     loss_fn = torch.nn.MSELoss()
 #     loss_fn = torch.nn.L1Loss()
 
@@ -151,7 +163,8 @@ if __name__ == "__main__":
     parser.add_argument('--latent_bound', type=float, default=1.0)
     parser.add_argument('--hidden_dim', type=int, default=256)
     parser.add_argument('--train_data_scaling', type=int, default=2)
-    
+    parser.add_argument('--activations', default='relu')
+
 
     args = parser.parse_args()
 
@@ -185,18 +198,19 @@ if __name__ == "__main__":
 
     # Multiple configurations
     B_dict = {
-#         'none': None,
+        'none': None,
         'basic': torch.eye(2).to(device)
     }
     B_gauss = torch.randn((mapping_size, 2)).to(device)
-    for scale in [1.,10.,100.]:
-        B_dict[f'gauss_{scale}'] = nn.Parameter(B_gauss * scale, requires_grad=True)
+    for scale in [10.]:
+        B_dict[f'gauss_{scale}'] = B_gauss * scale
+#         B_dict[f'gauss_{scale}'] = nn.Parameter(B_gauss * scale, requires_grad=True)
 
     # Collect outputs
     outputs = {}
     for k in tqdm(B_dict):
         outputs[k] = train_model(network_size, learning_rate, iters, B_dict[k],
-                                 train_data=train_data, test_data=test_data, device=device)
+                                 train_data=train_data, test_data=test_data, activation_style=args.activations, device=device)
 
     # Output images
     plt.figure(figsize=(24, 4))

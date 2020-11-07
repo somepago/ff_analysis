@@ -1,5 +1,5 @@
 '''
-python super_resolution_single.py --data ./fox.jpg--iters 10000 --activations special
+python super_resolution_single.py --data ./fox.jpg --iters 3000 --activations special --num_layers 10
 '''
 
 import os
@@ -10,6 +10,7 @@ import imageio
 import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
+from skimage.transform import rescale
 
 
 class Edges(nn.Module):
@@ -69,7 +70,7 @@ class SirenLayer(nn.Module):
 
 
 def make_model(num_layers, input_dim, hidden_dim, activation_style = 'relu'):
-    if activation_style == 'Siren':
+    if activation_style == 'siren':
         layers = [SirenLayer(input_dim, hidden_dim, is_first=True)]
         for i in range(1, num_layers - 1):
             layers.append(SirenLayer(hidden_dim, hidden_dim))
@@ -91,12 +92,36 @@ def make_model(num_layers, input_dim, hidden_dim, activation_style = 'relu'):
 
     return nn.Sequential(*layers)
 
+def encoding_ntk(num_layers, input_dim, hidden_dim, output_dim):
+    layers = [nn.Linear(input_dim, hidden_dim),nn.ReLU()]
+    for i in range(1, num_layers - 1):
+        layers.append(nn.Linear(hidden_dim, hidden_dim))
+        layers.append(nn.ReLU())
+    layers.append(nn.Linear(hidden_dim, output_dim))
+    layers.append(nn.Tanh())
+    return nn.Sequential(*layers)
+
+def init_weights(m):
+    if type(m) == nn.Linear:
+        torch.nn.init.xavier_normal_(m.weight)
+
 
 def train_model(network_size, learning_rate, iters, B, train_data, test_data,activation_style='relu', device=None):
     num_layers, input_dim, hidden_dim = network_size
-    input_dim = 2 if B is None else B.shape[0] * 2
+#     input_dim = 2 if B is None else B.shape[0] * 2
+    if B is None:
+        ip_model = encoding_ntk(3, 2, 1024, 512).to(device)
+#         ip_model.apply(init_weights)
+        input_dim = 512
+        scale2 = 1000
+    else:
+        input_dim = B.shape[0] * 2
+        
     model = make_model(num_layers, input_dim, hidden_dim).to(device)
-    optim = torch.optim.Adam(list(model.parameters()), lr=learning_rate)
+    if B is None:
+        optim = torch.optim.Adam(list(model.parameters()) + list(ip_model.parameters()), lr=learning_rate)
+    else:
+        optim = torch.optim.Adam(list(model.parameters()), lr=learning_rate)
 
 #     optim = torch.optim.Adam(list(model.parameters()) + [B], lr=learning_rate)
     loss_fn = torch.nn.MSELoss()
@@ -117,17 +142,27 @@ def train_model(network_size, learning_rate, iters, B, train_data, test_data,act
     for i in tqdm(range(iters), desc='train iter', leave=False):
         model.train()
         optim.zero_grad()
-
-        t_o = model(input_mapping(train_data[0], B))
+        if B is None:
+            with torch.no_grad(): 
+                ip = ip_model(train_data[0])*scale2
+            t_o = model(ip)
+        else:
+#             import ipdb; ipdb.set_trace()
+            t_o = model(input_mapping(train_data[0], B))
         t_loss = .5 * loss_fn(t_o, train_data[1])
+#         import ipdb; ipdb.set_trace()
         t_loss.backward(retain_graph=True)
+#         torch.nn.utils.clip_grad_norm_(model.parameters(), 1)
         optim.step()
 
         if i % 25 == 0:
             train_psnrs.append(- 10 * torch.log10(2 * t_loss).item())
             model.eval()
             with torch.no_grad():
-                v_o = model(input_mapping(test_data[0], B))
+                if B is None:
+                    v_o = model(ip_model(test_data[0])*scale2)
+                else:
+                    v_o = model(input_mapping(test_data[0], B))
                 v_loss = loss_fn(v_o, test_data[1])
                 v_psnrs = - 10 * torch.log10(2 * v_loss).item()
                 test_psnrs.append(v_psnrs)
@@ -171,6 +206,8 @@ if __name__ == "__main__":
     # Download and center crop 512x512 image
     image_url = args.data
     img = imageio.imread(image_url)[..., :3] / 255.
+    sf = min(img.shape[0],img.shape[1])
+    img = rescale(img, 512 / sf, multichannel = True)
     c = [img.shape[0]//2, img.shape[1]//2]
     r = 256
     img = img[c[0]-r:c[0]+r, c[1]-r:c[1]+r]
@@ -199,7 +236,7 @@ if __name__ == "__main__":
     # Multiple configurations
     B_dict = {
         'none': None,
-        'basic': torch.eye(2).to(device)
+#         'basic': torch.eye(2).to(device)
     }
     B_gauss = torch.randn((mapping_size, 2)).to(device)
     for scale in [10.]:

@@ -1,5 +1,9 @@
 """
 python super_resolution_multi.py --latent_size 256 --mapping_size 128 --iters 4000 --reg_lambda 1e-4 --activations Siren --max_images 6 --data ./data/32_div2k --scale 15
+
+python super_resolution_multi.py --iters=4000 --reg_lambda=1e-4 --activations='relu' --encoding='ntk' --latent_size=0 --data='./data/32_resized/0.jpg' --ntk_activation='siren'
+
+sbatch ~/scavenger.sh super_resolution_multi.py --iters=256000 --reg_lambda=1e-4 --activations='relu' --encoding='none' --latent_size=0 --data='./data/32_resized/0.jpg'
 """
 
 import os
@@ -53,12 +57,12 @@ class SirenLayer(nn.Module):
     
 
 
-def make_model(num_layers, input_dim, hidden_dim, activation_style = 'relu'):
+def make_model(num_layers, input_dim, hidden_dim, activation_style = 'relu', w0=30):
     if activation_style == 'siren':
-        layers = [SirenLayer(input_dim, hidden_dim, is_first=True)]
+        layers = [SirenLayer(input_dim, hidden_dim, is_first=True,w0 = w0)]
         for i in range(1, num_layers - 1):
-            layers.append(SirenLayer(hidden_dim, hidden_dim))
-        layers.append(SirenLayer(hidden_dim, 3, is_last=True))
+            layers.append(SirenLayer(hidden_dim, hidden_dim ,w0 = w0))
+        layers.append(SirenLayer(hidden_dim, 3, is_last=True, w0 = w0))
     elif activation_style == 'tanh':
         layers = [nn.Linear(input_dim, hidden_dim),nn.Tanh()]
         for i in range(1, num_layers - 1):
@@ -76,13 +80,27 @@ def make_model(num_layers, input_dim, hidden_dim, activation_style = 'relu'):
 
     return nn.Sequential(*layers)
 
-def encoding_ntk(num_layers, input_dim, hidden_dim, output_dim):
-    layers = [nn.Linear(input_dim, hidden_dim),nn.ReLU()]
-    for i in range(1, num_layers - 1):
-        layers.append(nn.Linear(hidden_dim, hidden_dim))
-        layers.append(nn.ReLU())
-    layers.append(nn.Linear(hidden_dim, output_dim))
-    layers.append(nn.Tanh())
+def encoding_ntk(num_layers, input_dim, hidden_dim, output_dim, activation = 'relu',w0=30):
+       
+    if activation == 'siren':
+        layers = [SirenLayer(input_dim, hidden_dim, is_first=True,w0 = w0)]
+        for i in range(1, num_layers - 1):
+            layers.append(SirenLayer(hidden_dim, hidden_dim,w0 = w0))
+        layers.append(SirenLayer(hidden_dim, output_dim, is_last=True,w0 = w0))      
+    else:
+        layers = [nn.Linear(input_dim, hidden_dim),nn.ReLU()]
+        for i in range(1, num_layers - 1):
+            layers.append(nn.Linear(hidden_dim, hidden_dim))
+            layers.append(nn.ReLU())
+        if activation =='sigmoid':
+            layers.append(nn.Linear(hidden_dim, output_dim))
+            layers.append(nn.Sigmoid())
+        elif activation =='leakyrelu':
+            layers.append(nn.Linear(hidden_dim, output_dim))
+            layers.append(nn.LeakyReLU())
+        else:
+            layers.append(nn.Linear(hidden_dim, output_dim))
+            layers.append(nn.Tanh())
     return nn.Sequential(*layers)
 
 def init_weights(m):
@@ -93,10 +111,10 @@ def train_model(network_size, learning_rate, iters, B, latent_params,
                 train_data, test_data, args, device=None):
     
     if args.encoding == 'ntk':
-        ip_model = encoding_ntk(3, 2, args.ntk_hidden, 2*args.mapping_size).to(device)
+        ip_model = encoding_ntk(3, 2, args.ntk_hidden, 2*args.mapping_size,args.ntk_activation,args.siren_w).to(device)
         scale_ = args.ntk_scale
         
-    model = make_model(*network_size,activation_style=args.activations).to(device)
+    model = make_model(*network_size,args.activations,args.siren_w).to(device)
 
     num_images = len(train_data[0])
     latent_size, latent_bound, reg_lambda = latent_params
@@ -119,6 +137,7 @@ def train_model(network_size, learning_rate, iters, B, latent_params,
         
     
     loss_fn = torch.nn.MSELoss()
+#     loss_fn = torch.nn.L1Loss()
 
     for i in tqdm(range(iters), desc='train iter', leave=False):
         model.train()
@@ -140,7 +159,9 @@ def train_model(network_size, learning_rate, iters, B, latent_params,
             l2_size_loss = torch.sum(torch.norm(image_latents.weight, dim=1))
             reg_loss = (reg_lambda * min(1, iters / 100) * l2_size_loss) / num_images
             t_loss = t_loss + reg_loss
-
+#         if i > 1000:
+#             t_loss += -100*ssim(t_o.permute(0, 3, 1, 2), train_data[1].permute(0, 3, 1, 2), data_range=1, size_average=True)
+            
         t_loss.backward(retain_graph=True)
         optim.step()
 
@@ -158,7 +179,6 @@ def train_model(network_size, learning_rate, iters, B, latent_params,
                     img_dim = x[0].shape[:2]
                     latents = image_latents.weight.unsqueeze(1).unsqueeze(1)
                     latents = latents.expand(-1, *img_dim, -1)
-#                     import ipdb; ipdb.set_trace()
                     x = torch.cat([x, latents], dim=3)
                 
                 v_o = model(x)
@@ -166,7 +186,7 @@ def train_model(network_size, learning_rate, iters, B, latent_params,
                 ssim_train = ssim(t_o.permute(0, 3, 1, 2), train_data[1].permute(0, 3, 1, 2), data_range=1, size_average=True)
                 ssim_val_list = ssim(v_o.permute(0, 3, 1, 2), test_data[1].permute(0, 3, 1, 2), data_range=1, size_average=False)
                 ssim_val = torch.mean(ssim_val_list)
-
+                mssim_val = ms_ssim(v_o.permute(0, 3, 1, 2), test_data[1].permute(0, 3, 1, 2), data_range=1, size_average=True)
             v_psnr = - 10 * torch.log10(2 * v_loss).item()
             
             
@@ -179,6 +199,7 @@ def train_model(network_size, learning_rate, iters, B, latent_params,
                 'psnr/valid': v_psnr,
                 'ssim/train':ssim_train.item(),
                 'ssim/valid':ssim_val.item(),
+                'ms_ssim/valid':mssim_val.item(),
                 'ssim/val_list':ssim_val_list.cpu(),
                 'prediction': [wandb.Image(img) for img in v_o.data.cpu().numpy()]
             })
@@ -221,6 +242,8 @@ if __name__ == "__main__":
     parser.add_argument('--ntk_hidden', type=int, default=1024)
     parser.add_argument('--update_ntk', action = 'store_true')
     parser.add_argument('--ntk_scale', type=int, default=10)
+    parser.add_argument('--ntk_activation', default='relu')
+    parser.add_argument('--siren_w', type=float, default=30)
     
     
 #     parser.add
@@ -235,7 +258,8 @@ if __name__ == "__main__":
     wandb.config.update(args)
 
     # Download and center crop 512x512 image
-    paths = glob(os.path.join(args.data, '*png'))
+#     paths = glob(os.path.join(args.data, '*png'))
+    paths = [args.data]
     imgs = [imageio.imread(path)[..., :3] / 255. for path in paths]
     
     for i in range(len(imgs)):   
@@ -246,7 +270,7 @@ if __name__ == "__main__":
         r = 256
         img = img[c[0]-r:c[0]+r, c[1]-r:c[1]+r,:]
         result = Image.fromarray((img * 255).astype(np.uint8))
-        result.save('./data/32_resized/'+str(i)+'.jpg')
+#         result.save('./data/32_resized/'+str(i)+'.jpg')
         imgs[i] = img
     
     num_images = min(len(imgs), args.max_images)

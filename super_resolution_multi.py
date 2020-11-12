@@ -1,9 +1,5 @@
 """
-python super_resolution_multi.py --latent_size 256 --mapping_size 128 --iters 4000 --reg_lambda 1e-4 --activations Siren --max_images 6 --data ./data/32_div2k --scale 15
-
-python super_resolution_multi.py --iters=4000 --reg_lambda=1e-4 --activations='relu' --encoding='ntk' --latent_size=0 --data='./data/32_resized/0.jpg' --ntk_activation='siren'
-
-sbatch ~/scavenger.sh super_resolution_multi.py --iters=256000 --reg_lambda=1e-4 --activations='relu' --encoding='none' --latent_size=0 --data='./data/32_resized/0.jpg'
+python super_resolution_multi.py --iters=4000 --reg_lambda=1e-4 --activations='relu' --encoding='ntk' --ntk_activation='siren' --latent_size=0 --data='./data/32_resized/0.jpg'
 """
 
 import os
@@ -46,7 +42,7 @@ class SirenLayer(nn.Module):
         self.init_weights()
 
     def init_weights(self):
-        b = 1 / self.in_f if self.is_first else np.sqrt(6 / self.in_f) / self.w0
+        b = 1 / self.in_f if self.is_first else np.sqrt(6 / self.in_f) / 30 #self.w0
         with torch.no_grad():
             self.linear.weight.uniform_(-b, b)
 
@@ -111,6 +107,7 @@ def train_model(network_size, learning_rate, iters, B, latent_params,
                 train_data, test_data, args, device=None):
     
     if args.encoding == 'ntk':
+        print('ntk_activated')
         ip_model = encoding_ntk(3, 2, args.ntk_hidden, 2*args.mapping_size,args.ntk_activation,args.siren_w).to(device)
         scale_ = args.ntk_scale
         
@@ -241,14 +238,15 @@ if __name__ == "__main__":
     parser.add_argument('--loss', default='l2')
     parser.add_argument('--ntk_hidden', type=int, default=1024)
     parser.add_argument('--update_ntk', action = 'store_true')
-    parser.add_argument('--ntk_scale', type=int, default=10)
+    parser.add_argument('--ntk_scale', type=int, default=200)
     parser.add_argument('--ntk_activation', default='relu')
-    parser.add_argument('--siren_w', type=float, default=30)
+    parser.add_argument('--siren_w', type=float, default=90)
     
     
 #     parser.add
 
     args = parser.parse_args()
+    print(args)
 
     # Boilerplate stuff
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
